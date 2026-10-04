@@ -2,8 +2,11 @@ name: SniperJoe Waechter
 
 on:
   schedule:
-    - cron: "3 * * * *"   # jede Stunde, 3 Minuten nach der vollen Stunde (UTC), nach Kerzenschluss
+    - cron: "7,37 * * * *"   # zweimal pro Stunde (Minute 7 und 37 UTC); neue Kerzen werden nur einmal gemeldet
   workflow_dispatch: {}
+  push:
+    paths:
+      - ".github/workflows/watch.yml"
 
 permissions:
   contents: write
