@@ -237,6 +237,11 @@ def main():
     now_ms = int(time.time() * 1000)
     state = load_state()
     first_run = not state.get("started")
+    closed_t = (now_ms // INTERVAL_MS) * INTERVAL_MS - INTERVAL_MS  # Start der zuletzt geschlossenen Kerze
+    if state.get("hour_done") == closed_t and not os.environ.get("FORCE"):
+        print("Kerze %d bereits verarbeitet, nichts zu tun." % closed_t)
+        return
+    gap_h = (closed_t - state["hour_done"]) / INTERVAL_MS if state.get("hour_done") else 0
     markets = list_markets()
     todo = sorted([m for m in markets if m[1] >= MIN_VOLUME], key=lambda x: -x[1])
     limit = int(os.environ.get("MAX_MARKETS", "0"))
@@ -294,6 +299,10 @@ def main():
         header = "SniperJoe: %d Signal(e)\n\n" % len(messages)
         telegram(header + "\n\n".join(messages) + "\n\nKein Handelssignal. Plan und Risiko pruefen.")
     print("Signale: %d, Fehler: %d" % (len(messages), errors))
+    if gap_h > 3 and not first_run:
+        telegram("SniperJoe: Der Waechter war etwa %d Stunden nicht aktiv. Es werden nur die letzten %d Kerzen nachgeholt." % (gap_h, BACKFILL_MAX))
+    if errors == 0:
+        state["hour_done"] = closed_t
     if errors > len(todo) * 0.5 and len(todo) > 0:
         telegram("SniperJoe: Warnung, mehr als die Haelfte der Abfragen ist fehlgeschlagen (%d von %d)." % (errors, len(todo)))
     save_state(state)

@@ -2,7 +2,7 @@ name: SniperJoe Waechter
 
 on:
   schedule:
-    - cron: "7,37 * * * *"   # zweimal pro Stunde (Minute 7 und 37 UTC); neue Kerzen werden nur einmal gemeldet
+    - cron: "*/10 * * * *"   # alle 10 Minuten; der Waechter tut nichts, wenn die Kerze schon verarbeitet ist
   workflow_dispatch: {}
   push:
     paths:
@@ -10,7 +10,6 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 concurrency:
   group: sniperjoe
@@ -19,7 +18,7 @@ concurrency:
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -38,15 +37,3 @@ jobs:
           git config user.email "sniperjoe-bot@users.noreply.github.com"
           git add state.json
           git diff --cached --quiet || (git commit -m "Zustand aktualisiert" && git push)
-      - name: Naechsten Lauf planen
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # GitHub-Cron ist unzuverlaessig. Deshalb startet sich der Workflow zur naechsten vollen Stunde (+60 s) selbst neu.
-          now=$(date +%s)
-          next=$(( (now / 3600 + 1) * 3600 + 60 ))
-          wait=$(( next - now ))
-          echo "Warte $wait Sekunden bis zum naechsten Lauf"
-          sleep $wait
-          gh workflow run watch.yml --ref main
