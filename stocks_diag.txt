@@ -1,0 +1,2 @@
+Stand 2026-10-07 19:15 UTC
+Letzter Fehler: <HTTPError 429: 'Too Many Requests'>
