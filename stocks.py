@@ -13,6 +13,7 @@ STATE_FILE = os.environ.get("STOCK_STATE_FILE", "stocks_state.json")
 SLEEP = float(os.environ.get("STOCK_SLEEP", "0.4"))
 RETRY_HOURS = float(os.environ.get("RETRY_HOURS", "3"))   # solange wird nach einer Grenze auf Yahoo-Daten gewartet
 TFS = [x.strip().lower() for x in os.environ.get("STOCK_TIMEFRAMES", "4h,1d").split(",") if x.strip().lower() in ("4h", "1d")]
+LAST_ERR = [""]
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"}
 
 
@@ -165,10 +166,12 @@ def main():
         except Exception as e:
             errors += 1
             streak += 1
+            LAST_ERR[0] = repr(e)
             print("Fehler %s: %r" % (r["t"], e), flush=True)
         time.sleep(SLEEP)
     if errors > len(wl) * 0.5:
         print("Mehr als die Haelfte der Abfragen fehlgeschlagen.")
+        open("stocks_diag.txt", "w").write("Stand %s UTC\nLetzter Fehler: %s\n" % (time.strftime("%Y-%m-%d %H:%M", time.gmtime(now_ms / 1000)), LAST_ERR[0]))
         if first_run or os.environ.get("ALERT_FAIL"):
             W.telegram("SniperJoe Aktien: Datenquelle (Yahoo Finance) liefert keine Daten, %d von %d Abfragen fehlgeschlagen." % (errors, len(wl)))
         save_state(state)
