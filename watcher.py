@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SniperJoe: Waechter fuer Hyperliquid-Perps.
 
-Regel (gleich wie Perp Guard v1.9, 1h-Kerzen):
+Regel (gleich wie Perp Guard v1.9, je Zeitrahmen):
   Linien: EMA(20) +/- 2.5 * ATR(14)   (ATR nach Wilder, wie TradingView ta.atr)
   Modus "Gegenbewegung": Tief <= untere Linie -> KAUF, Hoch >= obere Linie -> VERKAUF
   Modus "Ausbruch": umgekehrt
@@ -9,7 +9,7 @@ Regel (gleich wie Perp Guard v1.9, 1h-Kerzen):
     - nur KAUF: R >= MIN_R (Chance bis 10-Tage-Hoch, Stop = 1 Tages-ATR). VERKAUF ohne R-Filter.
     - KAUF: Kanalbreite (obere/untere Linie, vor der Signalkerze) >= MIN_BAND_PCT %
     - KAUF: starker Rueckgang (>= MIN_DROP_ATR ATR in 4 Kerzen) mit starkem Volumen (>= MIN_VOL_RATIO x Schnitt der letzten 20 Kerzen)
-  Kein Abwechseln mehr. Pro Markt und Richtung gilt eine Sperre von COOLDOWN_H Stunden.
+  Zeitrahmen: TIMEFRAMES (Standard 4h,1d). Kein Abwechseln. Pro Markt, Zeitrahmen und Richtung gilt eine Sperre von COOLDOWN_BARS Kerzen.
 Nur geschlossene Kerzen. Kein Handelssignal, kein Beleg fuer einen Vorteil.
 Nachricht per Telegram. Zustand in state.json (wird vom Workflow ins Repo committet).
 """
@@ -28,8 +28,12 @@ EMA_LEN = int(os.environ.get("EMA_LEN", "20"))
 ATR_LEN = int(os.environ.get("ATR_LEN", "14"))
 EXT = float(os.environ.get("EXT", "2.5"))
 MODE = os.environ.get("MODE", "Gegenbewegung")  # oder "Ausbruch"
-INTERVAL = "1h"
-INTERVAL_MS = 3600_000
+TF_MS = {"1h": 3600_000, "4h": 4 * 3600_000, "1d": 86400_000}
+TF_LABEL = {"1h": "1H", "4h": "4H", "1d": "1D"}
+# Farbmarke je Zeitrahmen (Telegram kennt keine Textfarben, deshalb farbige Quadrate; bewusst nicht gruen/rot)
+TF_BADGE = {"1h": "\u2B1C", "4h": "\U0001F7E6", "1d": "\U0001F7EA"}
+TF_BACKFILL = {"1h": 6, "4h": 2, "1d": 1}   # wie viele verpasste Kerzen nachgeholt werden
+TIMEFRAMES = [x.strip().lower() for x in os.environ.get("TIMEFRAMES", "4h,1d").split(",") if x.strip().lower() in TF_MS]
 CANDLES = int(os.environ.get("CANDLES", "120"))
 MIN_VOLUME = float(os.environ.get("MIN_VOLUME_USD", "2000000"))  # 24h-Volumen in USD
 INCLUDE_HIP3 = os.environ.get("INCLUDE_HIP3", "1") == "1"
@@ -40,7 +44,7 @@ MIN_R = float(os.environ.get("MIN_R", "2.0"))
 MIN_BAND_PCT = float(os.environ.get("MIN_BAND_PCT", "5.0"))
 MIN_DROP_ATR = float(os.environ.get("MIN_DROP_ATR", "2.0"))
 MIN_VOL_RATIO = float(os.environ.get("MIN_VOL_RATIO", "2.0"))
-COOLDOWN_H = float(os.environ.get("COOLDOWN_H", "6"))
+COOLDOWN_BARS = float(os.environ.get("COOLDOWN_BARS", "6"))  # Sperre pro Markt und Richtung, in Kerzen des jeweiligen Zeitrahmens
 STOP_DAY_MULT = float(os.environ.get("STOP_DAY_MULT", "1.0"))
 RANGE_DAYS = int(os.environ.get("RANGE_DAYS", "10"))
 
@@ -100,7 +104,7 @@ def atr_wilder(h, l, c, n):
 
 
 def get_candles(coin, interval, n_candles, now_ms):
-    step = INTERVAL_MS if interval == "1h" else 86400_000
+    step = TF_MS[interval]
     start = now_ms - (n_candles + 2) * step
     res = info({"type": "candleSnapshot", "req": {"coin": coin, "interval": interval, "startTime": int(start), "endTime": int(now_ms)}})
     out = []
@@ -284,31 +288,37 @@ def save_state(s):
         json.dump(s, f, indent=1, sort_keys=True)
 
 
-def main():
-    now_ms = int(time.time() * 1000)
-    state = load_state()
-    first_run = not state.get("started")
-    closed_t = (now_ms // INTERVAL_MS) * INTERVAL_MS - INTERVAL_MS  # Start der zuletzt geschlossenen Kerze
-    if state.get("hour_done") == closed_t and not os.environ.get("FORCE"):
-        print("Kerze %d bereits verarbeitet, nichts zu tun." % closed_t)
-        return
-    gap_h = (closed_t - state["hour_done"]) / INTERVAL_MS if state.get("hour_done") else 0
-    markets = list_markets()
-    todo = sorted([m for m in markets if m[1] >= MIN_VOLUME], key=lambda x: -x[1])
-    limit = int(os.environ.get("MAX_MARKETS", "0"))
-    if limit:
-        todo = todo[:limit]
-    print("Maerkte gesamt %d, geprueft (Volumen >= %.0f USD): %d" % (len(markets), MIN_VOLUME, len(todo)))
+_day_cache = {}
 
-    messages = []
+
+def day_info_cached(coin, now_ms):
+    if coin not in _day_cache:
+        _day_cache[coin] = day_info(coin, now_ms)
+    return _day_cache[coin]
+
+
+def process_timeframe(tf, state, todo, now_ms, first_run):
+    """Prueft alle Maerkte fuer einen Zeitrahmen. Gibt (Nachrichten, Fehlerzahl, gefiltert, neu_aktiviert) zurueck."""
+    ms = TF_MS[tf]
+    blk = state.setdefault("tf", {}).get(tf)
+    is_new = blk is None
+    if is_new:
+        blk = {"last_t": {}, "last_sent": {}, "done": None}
+        if tf == "1h" and state.get("last_t"):   # Altbestand aus frueheren Versionen uebernehmen
+            blk["last_t"] = dict(state["last_t"])
+            blk["last_sent"] = {k: v for k, v in state.get("last_sent", {}).items()}
+            blk["done"] = state.get("hour_done")
+            is_new = False
+        state["tf"][tf] = blk
+    messages, errors = [], 0
     filtered = {"sperre": 0, "kanal": 0, "rueckgang_volumen": 0, "keine_tagesdaten": 0, "r": 0}
-    errors = 0
+    badge = "%s <b>%s</b>" % (TF_BADGE[tf], TF_LABEL[tf])
     for coin, vol in todo:
         try:
-            cs = get_candles(coin, INTERVAL, CANDLES, now_ms)
+            cs = get_candles(coin, tf, CANDLES, now_ms)
         except Exception as e:
             errors += 1
-            print("Fehler %s: %s" % (coin, e))
+            print("Fehler %s %s: %s" % (tf, coin, e))
             time.sleep(SLEEP)
             continue
         cs = [k for k in cs if k["T"] <= now_ms]  # nur geschlossene Kerzen
@@ -316,19 +326,17 @@ def main():
             time.sleep(SLEEP)
             continue
         newest = cs[-1]["t"]
-        last_done = state["last_t"].get(coin)
+        last_done = blk["last_t"].get(coin)
         if last_done is None:
-            last_done = newest - 1  # erster Kontakt: nur ab jetzt
-            state["last_t"][coin] = newest
+            blk["last_t"][coin] = newest   # erster Kontakt: nur ab jetzt, nichts melden
             time.sleep(SLEEP)
             continue
         raw = evaluate(cs, last_done)
-        new = [x for x in raw if x["t"] >= newest - BACKFILL_MAX * INTERVAL_MS]
+        new = [x for x in raw if x["t"] >= newest - TF_BACKFILL[tf] * ms]
         for x in new:
             side, t = x["side"], x["t"]
-            key = coin + "|" + side
-            last_sent = state.setdefault("last_sent", {}).get(key)
-            if last_sent is not None and t - last_sent < COOLDOWN_H * INTERVAL_MS:
+            last_sent = blk["last_sent"].get(coin + "|" + side)
+            if last_sent is not None and t - last_sent < COOLDOWN_BARS * ms:
                 filtered["sperre"] += 1
                 continue
             if side == "KAUF":
@@ -338,7 +346,7 @@ def main():
                 if x["drop_atr"] < MIN_DROP_ATR or x["vol_ratio"] < MIN_VOL_RATIO:
                     filtered["rueckgang_volumen"] += 1
                     continue
-            di = day_info(coin, now_ms)
+            di = day_info_cached(coin, now_ms)
             have_day = bool(di) and di["atr"] > 0
             if side == "KAUF" and not have_day:
                 filtered["keine_tagesdaten"] += 1
@@ -351,11 +359,11 @@ def main():
             if side == "KAUF" and r < MIN_R:   # R-Filter gilt nur fuer KAUF
                 filtered["r"] += 1
                 continue
-            state["last_sent"][key] = t
+            blk["last_sent"][coin + "|" + side] = t
             arrow = "\U0001F7E2 <b>KAUF</b>" if side == "KAUF" else "\U0001F534 <b>VERKAUF</b>"
             lines = [
-                "%s  %s" % (arrow, coin),
-                "Kerze %s (Wien)" % vienna(t),
+                "%s  %s   %s" % (arrow, coin, badge),
+                "Kerze %s (Wien, Beginn)" % vienna(t),
                 "Linie %s | Schluss %s | 24h-Vol %.1f Mio USD" % (fmt(x["line"]), fmt(x["close"]), vol / 1e6),
             ]
             if have_day:
@@ -364,22 +372,58 @@ def main():
             if side == "KAUF":
                 lines.append("Rueckgang %.1f ATR in 4 Kerzen | Volumen %.1fx Schnitt | Kanalbreite %.1f %%" % (x["drop_atr"], x["vol_ratio"], x["band_pct"]))
             messages.append("\n".join(lines))
-        state["last_t"][coin] = newest
+        blk["last_t"][coin] = newest
         time.sleep(SLEEP)
+    return messages, errors, filtered, is_new
 
+
+def main():
+    now_ms = int(time.time() * 1000)
+    state = load_state()
+    first_run = not state.get("started")
+    force = bool(os.environ.get("FORCE"))
+    due = []
+    for tf in TIMEFRAMES:
+        closed_t = (now_ms // TF_MS[tf]) * TF_MS[tf] - TF_MS[tf]   # Beginn der zuletzt geschlossenen Kerze
+        done = (state.get("tf", {}).get(tf) or {}).get("done")
+        if tf == "1h" and "tf" not in state:
+            done = state.get("hour_done")
+        if done == closed_t and not force:
+            continue
+        due.append((tf, closed_t, done))
+    if not due:
+        print("Alle Zeitrahmen (%s) sind aktuell, nichts zu tun." % ",".join(TIMEFRAMES))
+        return
+    markets = list_markets()
+    todo = sorted([m for m in markets if m[1] >= MIN_VOLUME], key=lambda x: -x[1])
+    limit = int(os.environ.get("MAX_MARKETS", "0"))
+    if limit:
+        todo = todo[:limit]
+    print("Maerkte gesamt %d, geprueft (Volumen >= %.0f USD): %d | Zeitrahmen faellig: %s" % (len(markets), MIN_VOLUME, len(todo), ",".join(t for t, _, _ in due)))
+
+    all_msgs, activated = [], []
+    for tf, closed_t, done in due:
+        messages, errors, filtered, is_new = process_timeframe(tf, state, todo, now_ms, first_run)
+        print("[%s] Signale: %d, Fehler: %d, gefiltert: %s" % (tf, len(messages), errors, filtered))
+        all_msgs += messages
+        if is_new:
+            activated.append(tf)
+        gap = (closed_t - done) / TF_MS[tf] if done else 0
+        if gap > TF_BACKFILL[tf] + 2 and not first_run:
+            telegram("SniperJoe: Der Waechter war im Zeitrahmen %s etwa %d Kerzen lang nicht aktiv. Es werden nur die letzten %d nachgeholt." % (TF_LABEL[tf], gap, TF_BACKFILL[tf]))
+        if errors == 0:
+            state["tf"][tf]["done"] = closed_t
+        if errors > len(todo) * 0.5 and len(todo) > 0:
+            telegram("SniperJoe: Warnung, mehr als die Haelfte der Abfragen ist fehlgeschlagen (%s: %d von %d)." % (TF_LABEL[tf], errors, len(todo)))
+
+    state["started"] = True
     if first_run:
-        state["started"] = True
-        telegram("SniperJoe gestartet. Ueberwache %d Hyperliquid-Maerkte (1h, Modus %s, Linien EMA%d +/- %.1f ATR%d). Ab jetzt kommen Signale." % (len(todo), MODE, EMA_LEN, EXT, ATR_LEN))
-    if messages:
-        header = "SniperJoe: %d Signal(e)\n\n" % len(messages)
-        telegram(header + "\n\n".join(messages) + "\n\nKein Handelssignal. Plan und Risiko pruefen.", html=True)
-    print("Signale: %d, Fehler: %d, gefiltert: %s" % (len(messages), errors, filtered))
-    if gap_h > 3 and not first_run:
-        telegram("SniperJoe: Der Waechter war etwa %d Stunden nicht aktiv. Es werden nur die letzten %d Kerzen nachgeholt." % (gap_h, BACKFILL_MAX))
-    if errors == 0:
-        state["hour_done"] = closed_t
-    if errors > len(todo) * 0.5 and len(todo) > 0:
-        telegram("SniperJoe: Warnung, mehr als die Haelfte der Abfragen ist fehlgeschlagen (%d von %d)." % (errors, len(todo)))
+        telegram("SniperJoe gestartet. Ueberwache %d Hyperliquid-Maerkte (Zeitrahmen %s, Modus %s, Linien EMA%d +/- %.1f ATR%d). Ab jetzt kommen Signale." % (len(todo), ", ".join(TF_LABEL[t] for t in TIMEFRAMES), MODE, EMA_LEN, EXT, ATR_LEN))
+    elif activated:
+        telegram("SniperJoe: Neuer Zeitrahmen aktiv: %s. Ab jetzt kommen auch dort Signale. Aktive Zeitrahmen: %s." % (", ".join(TF_LABEL[t] for t in activated), ", ".join(TF_LABEL[t] for t in TIMEFRAMES)))
+    if all_msgs:
+        header = "SniperJoe: %d Signal(e)\n\n" % len(all_msgs)
+        telegram(header + "\n\n".join(all_msgs) + "\n\nKein Handelssignal. Plan und Risiko pruefen.", html=True)
     save_state(state)
 
 

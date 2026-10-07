@@ -1,6 +1,6 @@
 # SniperJoe
 
-Beobachtet alle Hyperliquid-Perps (Krypto und, falls als HIP-3-Markt gelistet, TradFi) im 1h-Chart und schickt eine Telegram-Nachricht, wenn eine Kerze die untere oder obere Linie beruehrt.
+Beobachtet alle Hyperliquid-Perps (Krypto und, falls als HIP-3-Markt gelistet, TradFi) im Zeitrahmen 4h und 1D (einstellbar, auch 1h moeglich) und schickt eine Telegram-Nachricht, wenn eine Kerze die untere oder obere Linie beruehrt.
 
 Linien: EMA(20) +/- 2.5 x ATR(14). Nur geschlossene Kerzen.
 - Kerze beruehrt untere Linie: KAUF
@@ -33,3 +33,7 @@ EMA_LEN, ATR_LEN, EXT, MODE (Gegenbewegung | Ausbruch), MIN_VOLUME_USD (Standard
 - Nur KAUF: Kanalbreite vor der Signalkerze >= 5 %, Rueckgang >= 2 ATR in 4 Kerzen, Volumen >= 2x Schnitt der letzten 20 Kerzen.
 - Telegram: KAUF und VERKAUF fett mit gruenem bzw. rotem Punkt (Telegram kennt keine Textfarbe).
 - Alle Werte sind Startwerte, kein belegtes Optimum. Einstellbar im Workflow (Abschnitt env).
+
+## Zeitrahmen
+Standard: 4h und 1D (Variable TIMEFRAMES im Workflow, z. B. "1h,4h,1d"). Telegram markiert den Zeitrahmen farbig: 4H blau, 1D lila, 1H weiss.
+Sperre gegen Wiederholungen: 6 Kerzen des jeweiligen Zeitrahmens pro Markt und Richtung.
