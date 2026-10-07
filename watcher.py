@@ -47,6 +47,12 @@ MIN_VOL_RATIO = float(os.environ.get("MIN_VOL_RATIO", "2.0"))
 COOLDOWN_BARS = float(os.environ.get("COOLDOWN_BARS", "6"))  # Sperre pro Markt und Richtung, in Kerzen des jeweiligen Zeitrahmens
 STOP_DAY_MULT = float(os.environ.get("STOP_DAY_MULT", "1.0"))
 RANGE_DAYS = int(os.environ.get("RANGE_DAYS", "10"))
+CONFIRM = os.environ.get("CONFIRM", "1") == "1"            # KAUF erst, wenn die naechste Kerze kein neues Tief macht
+WICK_ON = os.environ.get("WICK_ON", "1") == "1"            # KAUF nur, wenn der Schluss deutlich ueber dem Tief liegt
+WICK_MIN = float(os.environ.get("WICK_MIN", "0.5"))        # Lage des Schlusses in der Kerzenspanne (0 = Tief, 1 = Hoch)
+TREND_FILTER = os.environ.get("TREND_FILTER", "0") == "1"  # kein KAUF im Abwaertstrend (sonst nur Info)
+MKT_FILTER = os.environ.get("MKT_FILTER", "0") == "1"      # kein KAUF, wenn der Markt mitfaellt (sonst nur Info)
+MKT_DROP_ATR = float(os.environ.get("MKT_DROP_ATR", "2.0"))
 
 TG_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -156,17 +162,19 @@ def list_markets():
 
 
 def evaluate(candles, last_t_done):
-    """Liste von Signal-Dicts (Rohsignale) fuer Kerzen mit t > last_t_done."""
+    """Liste von Signal-Dicts. KAUF wird (bei CONFIRM) erst mit der naechsten Kerze gemeldet, wenn diese kein neues Tief macht.
+    "t" ist der Zeitpunkt der Meldung (Bestaetigungskerze), "t_sig" die Signalkerze, "close" der Kaufkurs, "close_sig" der Schluss der Signalkerze."""
     h = [k["h"] for k in candles]
     l = [k["l"] for k in candles]
     c = [k["c"] for k in candles]
     v = [k.get("v", 0.0) for k in candles]
     e = ema(c, EMA_LEN)
     a = atr_wilder(h, l, c, ATR_LEN)
+    n = len(candles)
     sig = []
     warm = max(EMA_LEN, ATR_LEN) * 2
     for i, k in enumerate(candles):
-        if i < warm or k["t"] <= last_t_done:
+        if i < warm:
             continue
         up = e[i] + EXT * a[i]
         dn = e[i] - EXT * a[i]
@@ -180,6 +188,16 @@ def evaluate(candles, last_t_done):
             side = "KAUF" if touch_up else ("VERKAUF" if touch_dn else None)
         if not side:
             continue
+        te, entry = k["t"], k["c"]
+        if side == "KAUF" and CONFIRM:
+            if i + 1 >= n:
+                continue                       # noch nicht bestaetigt
+            nxt = candles[i + 1]
+            if nxt["l"] < k["l"]:
+                continue                       # neues Tief: Signal verworfen
+            te, entry = nxt["t"], nxt["c"]
+        if te <= last_t_done:
+            continue
         # Kanalbreite VOR der Signalkerze (sonst weitet die Signalkerze selbst den Kanal und der Filter waere immer erfuellt)
         dn_prev = e[i - 1] - EXT * a[i - 1]
         up_prev = e[i - 1] + EXT * a[i - 1]
@@ -191,13 +209,80 @@ def evaluate(candles, last_t_done):
         lo4 = min(l[max(0, i - 3):i + 1])
         drop_atr = (hi4 - k["l"]) / a[i] if a[i] else 0.0   # Rueckgang bis zum Tief der Signalkerze
         rise_atr = (k["h"] - lo4) / a[i] if a[i] else 0.0
+        rng = k["h"] - k["l"]
         sig.append({
-            "t": k["t"], "side": side, "line": dn if touch_dn else up, "close": k["c"], "atr": a[i],
-            "band_pct": band_prev,
+            "t": te, "t_sig": k["t"], "side": side, "line": dn if touch_dn else up, "close": entry, "close_sig": k["c"], "atr": a[i],
+            "band_pct": band_prev, "wick": (k["c"] - k["l"]) / rng if rng > 0 else 0.0,
             "vol_ratio": vol_ratio, "drop_atr": drop_atr, "rise_atr": rise_atr,
             "touch_low": touch_dn,
         })
     return sig
+
+
+def mkt_fall(mcs, t):
+    """Faellt der Markt (Indexkerzen mcs) an der Kerze t stark? Rueckgang vom 4-Kerzen-Hoch bis zum Tief in ATR."""
+    if not mcs:
+        return False
+    idx = next((j for j, k in enumerate(mcs) if k["t"] == t), None)
+    if idx is None or idx < ATR_LEN + 1:
+        return False
+    a = atr_wilder([k["h"] for k in mcs], [k["l"] for k in mcs], [k["c"] for k in mcs], ATR_LEN)
+    hi4 = max(k["h"] for k in mcs[max(0, idx - 3):idx + 1])
+    return a[idx] > 0 and (hi4 - mcs[idx]["l"]) / a[idx] >= MKT_DROP_ATR
+
+
+def trend_state(di, price):
+    """(Zustand, Text) aus Tages-EMA50/EMA200 (letzte geschlossene Tageskerze) und aktuellem Preis."""
+    if not di or di.get("e200") is None or di.get("e50") is None:
+        return 0, "Trend 1D unbekannt (zu wenig Daten)"
+    if price > di["e200"] and di["e50"] > di["e200"]:
+        return 1, "Ruecksetzer im Aufwaertstrend (1D)"
+    if price < di["e200"] and di["e50"] < di["e200"]:
+        return -1, "gegen den Trend (Abwaertstrend 1D)"
+    return 0, "Trend 1D neutral"
+
+
+def make_signal(x, di, mfall, mname, name, badge, when_txt, vol_txt, extra_line=None):
+    """Prueft die Filter und baut den Text. Rueckgabe (Text, None) oder (None, Ablehngrund)."""
+    side = x["side"]
+    arrow = "\U0001F7E2 <b>KAUF</b>" if side == "KAUF" else "\U0001F534 <b>VERKAUF</b>"
+    head = "%s  %s   %s" % (arrow, name, badge)
+    if side == "VERKAUF":   # Verkauf: nur der Hinweis, keine Zusatzangaben
+        lines = [head, "Kerze %s (Beginn)" % when_txt, "Linie %s | Schluss %s%s" % (fmt(x["line"]), fmt(x["close"]), vol_txt)]
+        if extra_line:
+            lines.append(extra_line)
+        return "\n".join(lines), None
+    if x["band_pct"] < MIN_BAND_PCT:
+        return None, "kanal"
+    if x["drop_atr"] < MIN_DROP_ATR or x["vol_ratio"] < MIN_VOL_RATIO:
+        return None, "rueckgang_volumen"
+    if WICK_ON and x["wick"] < WICK_MIN:
+        return None, "kerzenform"
+    if not di or di["atr"] <= 0:
+        return None, "keine_tagesdaten"
+    dist = di["atr"] * STOP_DAY_MULT
+    if (di["hi"] - x["close_sig"]) / dist < MIN_R:
+        return None, "r"
+    st, st_txt = trend_state(di, x["close"])
+    if TREND_FILTER and st == -1:
+        return None, "trend"
+    if MKT_FILTER and mfall:
+        return None, "markt"
+    r = (di["hi"] - x["close"]) / dist
+    stop = x["close"] - dist
+    lines = [
+        head,
+        "Kerze %s (Beginn%s)" % (when_txt, ", bestaetigt" if CONFIRM else ""),
+        "<b>Kaufkurs %s</b> | Stop %s (%.1f %%) | Ziel %s (<b>%.1f R</b>)" % (fmt(x["close"]), fmt(stop), dist / x["close"] * 100, fmt(di["hi"]), r),
+        "Linie %s | Signalkerze Schluss %s%s" % (fmt(x["line"]), fmt(x["close_sig"]), vol_txt),
+        st_txt,
+    ]
+    if mfall:
+        lines.append("Markt faellt mit (%s)" % mname)
+    lines.append("Rueckgang %.1f ATR in 4 Kerzen | Volumen %.1fx Schnitt | Kanalbreite %.1f %% | Schluss %d %% der Kerze" % (x["drop_atr"], x["vol_ratio"], x["band_pct"], round(x["wick"] * 100)))
+    if extra_line:
+        lines.append(extra_line)
+    return "\n".join(lines), None
 
 
 def fmt(x):
@@ -211,15 +296,18 @@ def fmt(x):
 
 
 def day_info(coin, now_ms):
-    """Tages-ATR und Hoch/Tief der letzten RANGE_DAYS Tage (inkl. heutigem Tag). None, wenn nicht verfuegbar."""
+    """Tages-ATR, Hoch/Tief der letzten RANGE_DAYS Tage (inkl. heutigem Tag) und Tages-EMA50/EMA200. None, wenn nicht verfuegbar."""
     try:
-        d = get_candles(coin, "1d", 40, now_ms)
+        d = get_candles(coin, "1d", 260, now_ms)
         done = [k for k in d if k["T"] <= now_ms]
         if len(done) < ATR_LEN + 2:
             return None
         a = atr_wilder([k["h"] for k in done], [k["l"] for k in done], [k["c"] for k in done], ATR_LEN)
+        closes = [k["c"] for k in done]
+        e50 = ema(closes, 50)[-1] if len(closes) >= 50 else None
+        e200 = ema(closes, 200)[-1] if len(closes) >= 200 else None
         rng = d[-RANGE_DAYS:]
-        return {"atr": a[-1], "hi": max(k["h"] for k in rng), "lo": min(k["l"] for k in rng)}
+        return {"atr": a[-1], "hi": max(k["h"] for k in rng), "lo": min(k["l"] for k in rng), "e50": e50, "e200": e200}
     except Exception:
         return None
 
@@ -313,6 +401,11 @@ def process_timeframe(tf, state, todo, now_ms, first_run):
     messages, errors = [], 0
     filtered = {"sperre": 0, "kanal": 0, "rueckgang_volumen": 0, "keine_tagesdaten": 0, "r": 0}
     badge = "%s <b>%s</b>" % (TF_BADGE[tf], TF_LABEL[tf])
+    try:
+        mkt_cs = [k for k in get_candles("BTC", tf, CANDLES, now_ms) if k["T"] <= now_ms]
+    except Exception as e:
+        mkt_cs = []
+        print("BTC-Marktdaten nicht verfuegbar:", e)
     for coin, vol in todo:
         try:
             cs = get_candles(coin, tf, CANDLES, now_ms)
@@ -339,39 +432,14 @@ def process_timeframe(tf, state, todo, now_ms, first_run):
             if last_sent is not None and t - last_sent < COOLDOWN_BARS * ms:
                 filtered["sperre"] += 1
                 continue
-            if side == "KAUF":
-                if x["band_pct"] < MIN_BAND_PCT:
-                    filtered["kanal"] += 1
-                    continue
-                if x["drop_atr"] < MIN_DROP_ATR or x["vol_ratio"] < MIN_VOL_RATIO:
-                    filtered["rueckgang_volumen"] += 1
-                    continue
-            di = day_info_cached(coin, now_ms)
-            have_day = bool(di) and di["atr"] > 0
-            if side == "KAUF" and not have_day:
-                filtered["keine_tagesdaten"] += 1
-                continue
-            r = stop = dist = None
-            if have_day:
-                dist = di["atr"] * STOP_DAY_MULT
-                r = ((di["hi"] - x["close"]) if side == "KAUF" else (x["close"] - di["lo"])) / dist
-                stop = x["close"] - dist if side == "KAUF" else x["close"] + dist
-            if side == "KAUF" and r < MIN_R:   # R-Filter gilt nur fuer KAUF
-                filtered["r"] += 1
+            di = day_info_cached(coin, now_ms) if side == "KAUF" else None
+            mf = mkt_fall(mkt_cs, x["t_sig"]) if side == "KAUF" else False
+            text, why = make_signal(x, di, mf, "BTC", coin, badge, vienna(t) + " Wien", " | 24h-Vol %.1f Mio USD" % (vol / 1e6))
+            if text is None:
+                filtered[why] = filtered.get(why, 0) + 1
                 continue
             blk["last_sent"][coin + "|" + side] = t
-            arrow = "\U0001F7E2 <b>KAUF</b>" if side == "KAUF" else "\U0001F534 <b>VERKAUF</b>"
-            lines = [
-                "%s  %s   %s" % (arrow, coin, badge),
-                "Kerze %s (Wien, Beginn)" % vienna(t),
-                "Linie %s | Schluss %s | 24h-Vol %.1f Mio USD" % (fmt(x["line"]), fmt(x["close"]), vol / 1e6),
-            ]
-            if have_day:
-                lines.append("Chance bis %d-Tage-%s: <b>%.1f R</b>" % (RANGE_DAYS, "Hoch" if side == "KAUF" else "Tief", r))
-                lines.append("Stop-Vorschlag (%.1f Tages-ATR): %s (%.1f %%)" % (STOP_DAY_MULT, fmt(stop), dist / x["close"] * 100))
-            if side == "KAUF":
-                lines.append("Rueckgang %.1f ATR in 4 Kerzen | Volumen %.1fx Schnitt | Kanalbreite %.1f %%" % (x["drop_atr"], x["vol_ratio"], x["band_pct"]))
-            messages.append("\n".join(lines))
+            messages.append(text)
         blk["last_t"][coin] = newest
         time.sleep(SLEEP)
     return messages, errors, filtered, is_new

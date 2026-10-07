@@ -169,8 +169,11 @@ def day_context(d1c, now_ms):
     if len(done) < W.ATR_LEN + 2:
         return None
     a = W.atr_wilder([k["h"] for k in done], [k["l"] for k in done], [k["c"] for k in done], W.ATR_LEN)
+    closes = [k["c"] for k in done]
+    e50 = W.ema(closes, 50)[-1] if len(closes) >= 50 else None
+    e200 = W.ema(closes, 200)[-1] if len(closes) >= 200 else None
     rng = d1c[-W.RANGE_DAYS:]
-    return {"atr": a[-1], "hi": max(k["h"] for k in rng), "lo": min(k["l"] for k in rng)}
+    return {"atr": a[-1], "hi": max(k["h"] for k in rng), "lo": min(k["l"] for k in rng), "e50": e50, "e200": e200}
 
 
 def load_state():
@@ -266,42 +269,20 @@ def main():
                     if bars_since < W.COOLDOWN_BARS:
                         filt["sperre"] += 1
                         continue
+                di, mf = None, False
                 if side == "KAUF":
-                    if x["band_pct"] < W.MIN_BAND_PCT:
-                        filt["kanal"] += 1
-                        continue
-                    if x["drop_atr"] < W.MIN_DROP_ATR or x["vol_ratio"] < W.MIN_VOL_RATIO:
-                        filt["rueckgang_volumen"] += 1
-                        continue
-                d1b = series(r["t"], "1d")
-                di = day_context(d1b, now_ms) if d1b else None
-                have_day = bool(di) and di["atr"] > 0
-                if side == "KAUF" and not have_day:
-                    filt["keine_tagesdaten"] += 1
-                    continue
-                rr = stop = dist = None
-                if have_day:
-                    dist = di["atr"] * W.STOP_DAY_MULT
-                    rr = ((di["hi"] - x["close"]) if side == "KAUF" else (x["close"] - di["lo"])) / dist
-                    stop = x["close"] - dist if side == "KAUF" else x["close"] + dist
-                if side == "KAUF" and rr < W.MIN_R:
-                    filt["r"] += 1
+                    d1b = series(r["t"], "1d")
+                    di = day_context(d1b, now_ms) if d1b else None
+                    q = series("QQQ", tf)
+                    mf = W.mkt_fall([k for k in q if k["T"] <= now_ms], x["t_sig"]) if q else False
+                when = ny_dt(x["t"]).strftime("%d.%m. %H:%M") + " New York"
+                extra = "Liste: %s | Monat %s | Woche %s | %s" % (r["range"], r["mbx"], r["wbx"], r["pos"])
+                text, why = W.make_signal(x, di, mf, "QQQ", r["t"], badge + "   \U0001F4C8 Aktie", when, "", extra)
+                if text is None:
+                    filt[why] = filt.get(why, 0) + 1
                     continue
                 blk["last_sent"][r["t"] + "|" + side] = x["t"]
-                arrow = "\U0001F7E2 <b>KAUF</b>" if side == "KAUF" else "\U0001F534 <b>VERKAUF</b>"
-                when = ny_dt(x["t"]).strftime("%d.%m. %H:%M") + " New York"
-                lines = [
-                    "%s  %s   %s   \U0001F4C8 Aktie" % (arrow, r["t"], badge),
-                    "Kerze %s (Beginn)" % when,
-                    "Linie %s | Schluss %s" % (W.fmt(x["line"]), W.fmt(x["close"])),
-                ]
-                if have_day:
-                    lines.append("Chance bis %d-Tage-%s: <b>%.1f R</b>" % (W.RANGE_DAYS, "Hoch" if side == "KAUF" else "Tief", rr))
-                    lines.append("Stop-Vorschlag (%.1f Tages-ATR): %s (%.1f %%)" % (W.STOP_DAY_MULT, W.fmt(stop), dist / x["close"] * 100))
-                if side == "KAUF":
-                    lines.append("Rueckgang %.1f ATR in 4 Kerzen | Volumen %.1fx Schnitt | Kanalbreite %.1f %%" % (x["drop_atr"], x["vol_ratio"], x["band_pct"]))
-                lines.append("Liste: %s | Monat %s | Woche %s | %s" % (r["range"], r["mbx"], r["wbx"], r["pos"]))
-                msgs.append("\n".join(lines))
+                msgs.append(text)
             blk["last_t"][r["t"]] = newest
         print("[%s] stale=%d gefiltert=%s" % (tf, stale, filt))
         if errs[0] > len(wl) * 0.5:

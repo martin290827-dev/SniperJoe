@@ -45,3 +45,11 @@ Gleiche Regel und gleiche Filter wie bei Hyperliquid, aber fuer die Ticker in `s
 - 4H = zwei US-Sitzungsbloecke pro Tag (09:30-13:30 und 13:30-16:00 New York), 1D = Tageskerze.
 - Workflow `stocks.yml` laeuft werktags alle 10 Minuten von 17-23 UTC, rechnet aber nur kurz nach 13:30 und 16:00 New York.
 - Zustand in `stocks_state.json`. Die Liste aendern: CSV im Ordner `stocks/` ersetzen.
+
+
+## Zusatzpruefungen fuer KAUF (v2)
+
+- Bestaetigungskerze (`CONFIRM=1`): KAUF kommt erst, wenn die naechste Kerze kein neues Tief macht. Kaufkurs = Schluss der Bestaetigungskerze.
+- Kerzenform (`WICK_ON=1`, `WICK_MIN=0.5`): Schluss der Signalkerze mindestens in der oberen Haelfte der Kerzenspanne.
+- Trend 1D (EMA50/EMA200) und Markt (BTC bei Hyperliquid, QQQ bei Aktien; faellt mit ab `MKT_DROP_ATR=2.0`) stehen als Info in der Nachricht. Als Filter nur mit `TREND_FILTER=1` bzw. `MKT_FILTER=1`.
+- Nachricht KAUF: Kaufkurs, Stop, Ziel, R. VERKAUF: nur Hinweis ohne Zusatzangaben.
