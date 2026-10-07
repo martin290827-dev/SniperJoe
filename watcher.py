@@ -5,7 +5,11 @@ Regel (gleich wie Perp Guard v1.9, 1h-Kerzen):
   Linien: EMA(20) +/- 2.5 * ATR(14)   (ATR nach Wilder, wie TradingView ta.atr)
   Modus "Gegenbewegung": Tief <= untere Linie -> KAUF, Hoch >= obere Linie -> VERKAUF
   Modus "Ausbruch": umgekehrt
-  Signale wechseln sich je Markt ab (nach KAUF kommt erst wieder VERKAUF und umgekehrt).
+  Filter (alle per Umgebungsvariable einstellbar):
+    - R >= MIN_R (Chance bis 10-Tage-Hoch bzw. -Tief, Stop = 1 Tages-ATR)
+    - KAUF: Kanalbreite (obere/untere Linie, vor der Signalkerze) >= MIN_BAND_PCT %
+    - KAUF: starker Rueckgang (>= MIN_DROP_ATR ATR in 4 Kerzen) mit starkem Volumen (>= MIN_VOL_RATIO x Schnitt der letzten 20 Kerzen)
+  Kein Abwechseln mehr. Pro Markt und Richtung gilt eine Sperre von COOLDOWN_H Stunden.
 Nur geschlossene Kerzen. Kein Handelssignal, kein Beleg fuer einen Vorteil.
 Nachricht per Telegram. Zustand in state.json (wird vom Workflow ins Repo committet).
 """
@@ -32,6 +36,13 @@ INCLUDE_HIP3 = os.environ.get("INCLUDE_HIP3", "1") == "1"
 SLEEP = float(os.environ.get("SLEEP", "1.4"))
 DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
 BACKFILL_MAX = int(os.environ.get("BACKFILL_MAX", "6"))  # max. verpasste Kerzen, die nachgeholt werden
+MIN_R = float(os.environ.get("MIN_R", "2.0"))
+MIN_BAND_PCT = float(os.environ.get("MIN_BAND_PCT", "5.0"))
+MIN_DROP_ATR = float(os.environ.get("MIN_DROP_ATR", "2.0"))
+MIN_VOL_RATIO = float(os.environ.get("MIN_VOL_RATIO", "2.0"))
+COOLDOWN_H = float(os.environ.get("COOLDOWN_H", "6"))
+STOP_DAY_MULT = float(os.environ.get("STOP_DAY_MULT", "1.0"))
+RANGE_DAYS = int(os.environ.get("RANGE_DAYS", "10"))
 
 TG_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -94,7 +105,7 @@ def get_candles(coin, interval, n_candles, now_ms):
     res = info({"type": "candleSnapshot", "req": {"coin": coin, "interval": interval, "startTime": int(start), "endTime": int(now_ms)}})
     out = []
     for k in res:
-        out.append({"t": int(k["t"]), "T": int(k["T"]), "o": float(k["o"]), "h": float(k["h"]), "l": float(k["l"]), "c": float(k["c"])})
+        out.append({"t": int(k["t"]), "T": int(k["T"]), "o": float(k["o"]), "h": float(k["h"]), "l": float(k["l"]), "c": float(k["c"]), "v": float(k.get("v") or 0.0)})
     out.sort(key=lambda x: x["t"])
     return out
 
@@ -141,16 +152,17 @@ def list_markets():
 
 
 def evaluate(candles, last_t_done):
-    """Gibt Liste (kerzen_t, 'KAUF'/'VERKAUF', linie, schluss) fuer Kerzen mit t > last_t_done zurueck (Rohsignale)."""
+    """Liste von Signal-Dicts (Rohsignale) fuer Kerzen mit t > last_t_done."""
     h = [k["h"] for k in candles]
     l = [k["l"] for k in candles]
     c = [k["c"] for k in candles]
+    v = [k.get("v", 0.0) for k in candles]
     e = ema(c, EMA_LEN)
     a = atr_wilder(h, l, c, ATR_LEN)
     sig = []
     warm = max(EMA_LEN, ATR_LEN) * 2
     for i, k in enumerate(candles):
-        if i < warm:
+        if i < warm or k["t"] <= last_t_done:
             continue
         up = e[i] + EXT * a[i]
         dn = e[i] - EXT * a[i]
@@ -162,9 +174,25 @@ def evaluate(candles, last_t_done):
             side = "KAUF" if touch_dn else ("VERKAUF" if touch_up else None)
         else:
             side = "KAUF" if touch_up else ("VERKAUF" if touch_dn else None)
-        if side:
-            line = dn if touch_dn else up
-            sig.append((k["t"], side, line, k["c"], a[i]))
+        if not side:
+            continue
+        # Kanalbreite VOR der Signalkerze (sonst weitet die Signalkerze selbst den Kanal und der Filter waere immer erfuellt)
+        dn_prev = e[i - 1] - EXT * a[i - 1]
+        up_prev = e[i - 1] + EXT * a[i - 1]
+        band_prev = (up_prev - dn_prev) / dn_prev * 100.0 if dn_prev > 0 else 0.0
+        prev = v[max(0, i - 20):i]
+        avg_v = sum(prev) / len(prev) if prev else 0.0
+        vol_ratio = v[i] / avg_v if avg_v > 0 else 0.0
+        hi4 = max(h[max(0, i - 3):i + 1])
+        lo4 = min(l[max(0, i - 3):i + 1])
+        drop_atr = (hi4 - k["l"]) / a[i] if a[i] else 0.0   # Rueckgang bis zum Tief der Signalkerze
+        rise_atr = (k["h"] - lo4) / a[i] if a[i] else 0.0
+        sig.append({
+            "t": k["t"], "side": side, "line": dn if touch_dn else up, "close": k["c"], "atr": a[i],
+            "band_pct": band_prev,
+            "vol_ratio": vol_ratio, "drop_atr": drop_atr, "rise_atr": rise_atr,
+            "touch_low": touch_dn,
+        })
     return sig
 
 
@@ -178,19 +206,30 @@ def fmt(x):
     return "%.6g" % x
 
 
-def day_atr(coin, now_ms):
+def day_info(coin, now_ms):
+    """Tages-ATR und Hoch/Tief der letzten RANGE_DAYS Tage (inkl. heutigem Tag). None, wenn nicht verfuegbar."""
     try:
         d = get_candles(coin, "1d", 40, now_ms)
-        d = [k for k in d if k["T"] <= now_ms]
-        if len(d) < ATR_LEN + 2:
+        done = [k for k in d if k["T"] <= now_ms]
+        if len(done) < ATR_LEN + 2:
             return None
-        a = atr_wilder([k["h"] for k in d], [k["l"] for k in d], [k["c"] for k in d], ATR_LEN)
-        return a[-1]
+        a = atr_wilder([k["h"] for k in done], [k["l"] for k in done], [k["c"] for k in done], ATR_LEN)
+        rng = d[-RANGE_DAYS:]
+        return {"atr": a[-1], "hi": max(k["h"] for k in rng), "lo": min(k["l"] for k in rng)}
     except Exception:
         return None
 
 
-def telegram(text):
+def vienna(t_ms):
+    try:
+        from zoneinfo import ZoneInfo
+        import datetime
+        return datetime.datetime.fromtimestamp(t_ms / 1000, ZoneInfo("Europe/Vienna")).strftime("%d.%m. %H:%M")
+    except Exception:
+        return time.strftime("%d.%m. %H:%M", time.gmtime(t_ms / 1000 + 3600 * 2))
+
+
+def telegram(text, html=False):
     if DRY_RUN or not TG_TOKEN:
         print("[Telegram aus] " + text)
         return
@@ -200,10 +239,22 @@ def telegram(text):
     if not TG_CHAT:
         print("Keine Chat-ID. Schreibe dem Bot einmal eine Nachricht (z. B. /start) und starte den Lauf erneut.")
         return
-    for i in range(0, len(text), 3800):
-        part = text[i:i + 3800]
-        url = "https://api.telegram.org/bot%s/sendMessage" % TG_TOKEN
-        post(url, {"chat_id": TG_CHAT, "text": part, "disable_web_page_preview": True})
+    # in Bloecken senden, damit HTML-Tags nie mitten im Tag getrennt werden
+    chunks, cur = [], ""
+    for block in text.split("\n\n"):
+        if cur and len(cur) + len(block) + 2 > 3500:
+            chunks.append(cur)
+            cur = block
+        else:
+            cur = cur + "\n\n" + block if cur else block
+    if cur:
+        chunks.append(cur)
+    url = "https://api.telegram.org/bot%s/sendMessage" % TG_TOKEN
+    for part in chunks:
+        payload = {"chat_id": TG_CHAT, "text": part, "disable_web_page_preview": True}
+        if html:
+            payload["parse_mode"] = "HTML"
+        post(url, payload)
 
 
 def discover_chat():
@@ -250,6 +301,7 @@ def main():
     print("Maerkte gesamt %d, geprueft (Volumen >= %.0f USD): %d" % (len(markets), MIN_VOLUME, len(todo)))
 
     messages = []
+    filtered = {"sperre": 0, "kanal": 0, "rueckgang_volumen": 0, "keine_tagesdaten": 0, "r": 0}
     errors = 0
     for coin, vol in todo:
         try:
@@ -268,27 +320,46 @@ def main():
         if last_done is None:
             last_done = newest - 1  # erster Kontakt: nur ab jetzt
             state["last_t"][coin] = newest
-            # Zustand der Abwechslung aus der Historie ableiten (letztes Rohsignal), ohne zu melden
-            hist = evaluate(cs, 0)
-            if hist:
-                state["last_sig"][coin] = hist[-1][1]
             time.sleep(SLEEP)
             continue
         raw = evaluate(cs, last_done)
-        new = [s for s in raw if s[0] > last_done and s[0] >= newest - BACKFILL_MAX * INTERVAL_MS]
-        for t, side, line, close, a in new:
-            if state["last_sig"].get(coin) == side:
+        new = [x for x in raw if x["t"] >= newest - BACKFILL_MAX * INTERVAL_MS]
+        for x in new:
+            side, t = x["side"], x["t"]
+            key = coin + "|" + side
+            last_sent = state.setdefault("last_sent", {}).get(key)
+            if last_sent is not None and t - last_sent < COOLDOWN_H * INTERVAL_MS:
+                filtered["sperre"] += 1
                 continue
-            state["last_sig"][coin] = side
-            da = day_atr(coin, now_ms)
-            if da:
-                stop = close - da if side == "KAUF" else close + da
-                stop_txt = "Stop-Vorschlag (1 Tages-ATR): %s (%.1f %%)" % (fmt(stop), da / close * 100)
-            else:
-                stop_txt = "Stop-Vorschlag: n/a"
-            ts = time.strftime("%d.%m. %H:%M", time.gmtime(t / 1000 + 3600 * 2))  # ungefaehr Wien (Sommerzeit)
-            arrow = "🟢 KAUF" if side == "KAUF" else "🔴 VERKAUF"
-            messages.append("%s  %s\nKerze %s (Wien)\nLinie %s | Schluss %s | 24h-Vol %.1f Mio USD\n%s" % (arrow, coin, ts, fmt(line), fmt(close), vol / 1e6, stop_txt))
+            if side == "KAUF":
+                if x["band_pct"] < MIN_BAND_PCT:
+                    filtered["kanal"] += 1
+                    continue
+                if x["drop_atr"] < MIN_DROP_ATR or x["vol_ratio"] < MIN_VOL_RATIO:
+                    filtered["rueckgang_volumen"] += 1
+                    continue
+            di = day_info(coin, now_ms)
+            if not di or di["atr"] <= 0:
+                filtered["keine_tagesdaten"] += 1
+                continue
+            dist = di["atr"] * STOP_DAY_MULT
+            r = ((di["hi"] - x["close"]) if side == "KAUF" else (x["close"] - di["lo"])) / dist
+            if r < MIN_R:
+                filtered["r"] += 1
+                continue
+            stop = x["close"] - dist if side == "KAUF" else x["close"] + dist
+            state["last_sent"][key] = t
+            arrow = "\U0001F7E2 <b>KAUF</b>" if side == "KAUF" else "\U0001F534 <b>VERKAUF</b>"
+            lines = [
+                "%s  %s" % (arrow, coin),
+                "Kerze %s (Wien)" % vienna(t),
+                "Linie %s | Schluss %s | 24h-Vol %.1f Mio USD" % (fmt(x["line"]), fmt(x["close"]), vol / 1e6),
+                "Chance bis %d-Tage-%s: <b>%.1f R</b>" % (RANGE_DAYS, "Hoch" if side == "KAUF" else "Tief", r),
+                "Stop-Vorschlag (%.1f Tages-ATR): %s (%.1f %%)" % (STOP_DAY_MULT, fmt(stop), dist / x["close"] * 100),
+            ]
+            if side == "KAUF":
+                lines.append("Rueckgang %.1f ATR in 4 Kerzen | Volumen %.1fx Schnitt | Kanalbreite %.1f %%" % (x["drop_atr"], x["vol_ratio"], x["band_pct"]))
+            messages.append("\n".join(lines))
         state["last_t"][coin] = newest
         time.sleep(SLEEP)
 
@@ -297,8 +368,8 @@ def main():
         telegram("SniperJoe gestartet. Ueberwache %d Hyperliquid-Maerkte (1h, Modus %s, Linien EMA%d +/- %.1f ATR%d). Ab jetzt kommen Signale." % (len(todo), MODE, EMA_LEN, EXT, ATR_LEN))
     if messages:
         header = "SniperJoe: %d Signal(e)\n\n" % len(messages)
-        telegram(header + "\n\n".join(messages) + "\n\nKein Handelssignal. Plan und Risiko pruefen.")
-    print("Signale: %d, Fehler: %d" % (len(messages), errors))
+        telegram(header + "\n\n".join(messages) + "\n\nKein Handelssignal. Plan und Risiko pruefen.", html=True)
+    print("Signale: %d, Fehler: %d, gefiltert: %s" % (len(messages), errors, filtered))
     if gap_h > 3 and not first_run:
         telegram("SniperJoe: Der Waechter war etwa %d Stunden nicht aktiv. Es werden nur die letzten %d Kerzen nachgeholt." % (gap_h, BACKFILL_MAX))
     if errors == 0:

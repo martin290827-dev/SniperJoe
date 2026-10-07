@@ -5,7 +5,7 @@ Beobachtet alle Hyperliquid-Perps (Krypto und, falls als HIP-3-Markt gelistet, T
 Linien: EMA(20) +/- 2.5 x ATR(14). Nur geschlossene Kerzen.
 - Kerze beruehrt untere Linie: KAUF
 - Kerze beruehrt obere Linie: VERKAUF
-- Pro Markt wird ein Signal nur gemeldet, wenn die Kerze neu ist; Abwechslung KAUF/VERKAUF wird im Zustand mitgefuehrt.
+- Pro Markt und Richtung gilt eine Sperre von 6 Stunden (kein Abwechseln mehr).
 - Modus "Ausbruch" (umgekehrt) ueber Variable MODE=Ausbruch.
 
 Hinweis: Regel ist nicht als profitabel belegt. Es ist ein Hinweisgeber, kein Handelssystem.
@@ -27,3 +27,9 @@ EMA_LEN, ATR_LEN, EXT, MODE (Gegenbewegung | Ausbruch), MIN_VOLUME_USD (Standard
 ## Grenzen
 - GitHub-Cron kann um Minuten verzoegert sein. Signale sind Stunden-Signale, kein Echtzeit.
 - Zustand in `state.json` (wird vom Workflow committet).
+
+## Filter (ab v2)
+- R >= 2 (beide Richtungen): (10-Tage-Hoch - Schluss) / Tages-ATR fuer KAUF, (Schluss - 10-Tage-Tief) / Tages-ATR fuer VERKAUF.
+- Nur KAUF: Kanalbreite vor der Signalkerze >= 5 %, Rueckgang >= 2 ATR in 4 Kerzen, Volumen >= 2x Schnitt der letzten 20 Kerzen.
+- Telegram: KAUF und VERKAUF fett mit gruenem bzw. rotem Punkt (Telegram kennt keine Textfarbe).
+- Alle Werte sind Startwerte, kein belegtes Optimum. Einstellbar im Workflow (Abschnitt env).
