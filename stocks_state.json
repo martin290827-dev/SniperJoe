@@ -1,4 +1,16 @@
 {
+ "fail_alert": "2026-10-07",
  "started": false,
- "tf": {}
+ "tf": {
+  "1d": {
+   "done": null,
+   "last_sent": {},
+   "last_t": {}
+  },
+  "4h": {
+   "done": null,
+   "last_sent": {},
+   "last_t": {}
+  }
+ }
 }
