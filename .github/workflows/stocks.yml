@@ -1,0 +1,49 @@
+name: SniperJoe Aktien
+
+on:
+  schedule:
+    - cron: "*/10 17-23 * * 1-5"
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/stocks.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sniperjoe-stocks
+  cancel-in-progress: false
+
+jobs:
+  stocks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Aktien-Waechter ausfuehren
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MODE: Gegenbewegung
+          MIN_R: "2.0"
+          MIN_BAND_PCT: "5.0"
+          MIN_DROP_ATR: "2.0"
+          MIN_VOL_RATIO: "2.0"
+          COOLDOWN_BARS: "6"
+          STOCK_TIMEFRAMES: "4h,1d"
+        run: python stocks.py
+      - name: Zustand speichern
+        if: always()
+        run: |
+          git config user.name "sniperjoe-bot"
+          git config user.email "sniperjoe-bot@users.noreply.github.com"
+          git add stocks_state.json 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Aktien-Zustand aktualisiert"
+            git pull --rebase -q || true
+            git push || true
+          fi

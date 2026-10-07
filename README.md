@@ -37,3 +37,11 @@ EMA_LEN, ATR_LEN, EXT, MODE (Gegenbewegung | Ausbruch), MIN_VOLUME_USD (Standard
 ## Zeitrahmen
 Standard: 4h und 1D (Variable TIMEFRAMES im Workflow, z. B. "1h,4h,1d"). Telegram markiert den Zeitrahmen farbig: 4H blau, 1D lila, 1H weiss.
 Sperre gegen Wiederholungen: 6 Kerzen des jeweiligen Zeitrahmens pro Markt und Richtung.
+
+
+## Aktien (stocks.py)
+
+Gleiche Regel und gleiche Filter wie bei Hyperliquid, aber fuer die Ticker in `stocks/watchlist-main-fund.csv` (Yahoo Finance als Datenquelle, inoffiziell).
+- 4H = zwei US-Sitzungsbloecke pro Tag (09:30-13:30 und 13:30-16:00 New York), 1D = Tageskerze.
+- Workflow `stocks.yml` laeuft werktags alle 10 Minuten von 17-23 UTC, rechnet aber nur kurz nach 13:30 und 16:00 New York.
+- Zustand in `stocks_state.json`. Die Liste aendern: CSV im Ordner `stocks/` ersetzen.
