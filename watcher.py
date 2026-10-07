@@ -6,7 +6,7 @@ Regel (gleich wie Perp Guard v1.9, 1h-Kerzen):
   Modus "Gegenbewegung": Tief <= untere Linie -> KAUF, Hoch >= obere Linie -> VERKAUF
   Modus "Ausbruch": umgekehrt
   Filter (alle per Umgebungsvariable einstellbar):
-    - R >= MIN_R (Chance bis 10-Tage-Hoch bzw. -Tief, Stop = 1 Tages-ATR)
+    - nur KAUF: R >= MIN_R (Chance bis 10-Tage-Hoch, Stop = 1 Tages-ATR). VERKAUF ohne R-Filter.
     - KAUF: Kanalbreite (obere/untere Linie, vor der Signalkerze) >= MIN_BAND_PCT %
     - KAUF: starker Rueckgang (>= MIN_DROP_ATR ATR in 4 Kerzen) mit starkem Volumen (>= MIN_VOL_RATIO x Schnitt der letzten 20 Kerzen)
   Kein Abwechseln mehr. Pro Markt und Richtung gilt eine Sperre von COOLDOWN_H Stunden.
@@ -339,24 +339,28 @@ def main():
                     filtered["rueckgang_volumen"] += 1
                     continue
             di = day_info(coin, now_ms)
-            if not di or di["atr"] <= 0:
+            have_day = bool(di) and di["atr"] > 0
+            if side == "KAUF" and not have_day:
                 filtered["keine_tagesdaten"] += 1
                 continue
-            dist = di["atr"] * STOP_DAY_MULT
-            r = ((di["hi"] - x["close"]) if side == "KAUF" else (x["close"] - di["lo"])) / dist
-            if r < MIN_R:
+            r = stop = dist = None
+            if have_day:
+                dist = di["atr"] * STOP_DAY_MULT
+                r = ((di["hi"] - x["close"]) if side == "KAUF" else (x["close"] - di["lo"])) / dist
+                stop = x["close"] - dist if side == "KAUF" else x["close"] + dist
+            if side == "KAUF" and r < MIN_R:   # R-Filter gilt nur fuer KAUF
                 filtered["r"] += 1
                 continue
-            stop = x["close"] - dist if side == "KAUF" else x["close"] + dist
             state["last_sent"][key] = t
             arrow = "\U0001F7E2 <b>KAUF</b>" if side == "KAUF" else "\U0001F534 <b>VERKAUF</b>"
             lines = [
                 "%s  %s" % (arrow, coin),
                 "Kerze %s (Wien)" % vienna(t),
                 "Linie %s | Schluss %s | 24h-Vol %.1f Mio USD" % (fmt(x["line"]), fmt(x["close"]), vol / 1e6),
-                "Chance bis %d-Tage-%s: <b>%.1f R</b>" % (RANGE_DAYS, "Hoch" if side == "KAUF" else "Tief", r),
-                "Stop-Vorschlag (%.1f Tages-ATR): %s (%.1f %%)" % (STOP_DAY_MULT, fmt(stop), dist / x["close"] * 100),
             ]
+            if have_day:
+                lines.append("Chance bis %d-Tage-%s: <b>%.1f R</b>" % (RANGE_DAYS, "Hoch" if side == "KAUF" else "Tief", r))
+                lines.append("Stop-Vorschlag (%.1f Tages-ATR): %s (%.1f %%)" % (STOP_DAY_MULT, fmt(stop), dist / x["close"] * 100))
             if side == "KAUF":
                 lines.append("Rueckgang %.1f ATR in 4 Kerzen | Volumen %.1fx Schnitt | Kanalbreite %.1f %%" % (x["drop_atr"], x["vol_ratio"], x["band_pct"]))
             messages.append("\n".join(lines))

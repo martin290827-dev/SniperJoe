@@ -29,7 +29,7 @@ EMA_LEN, ATR_LEN, EXT, MODE (Gegenbewegung | Ausbruch), MIN_VOLUME_USD (Standard
 - Zustand in `state.json` (wird vom Workflow committet).
 
 ## Filter (ab v2)
-- R >= 2 (beide Richtungen): (10-Tage-Hoch - Schluss) / Tages-ATR fuer KAUF, (Schluss - 10-Tage-Tief) / Tages-ATR fuer VERKAUF.
+- Nur KAUF: R >= 2, R = (10-Tage-Hoch - Schluss) / Tages-ATR. VERKAUF hat keinen R-Filter (R wird nur angezeigt).
 - Nur KAUF: Kanalbreite vor der Signalkerze >= 5 %, Rueckgang >= 2 ATR in 4 Kerzen, Volumen >= 2x Schnitt der letzten 20 Kerzen.
 - Telegram: KAUF und VERKAUF fett mit gruenem bzw. rotem Punkt (Telegram kennt keine Textfarbe).
 - Alle Werte sind Startwerte, kein belegtes Optimum. Einstellbar im Workflow (Abschnitt env).
