@@ -18,7 +18,7 @@ concurrency:
 jobs:
   stocks:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -34,6 +34,7 @@ jobs:
           MIN_DROP_ATR: "2.0"
           MIN_VOL_RATIO: "2.0"
           COOLDOWN_BARS: "6"
+          TWELVEDATA_KEY: ${{ secrets.TWELVEDATA_KEY }}
           STOCK_TIMEFRAMES: "4h,1d"
         run: python stocks.py
       - name: Zustand speichern

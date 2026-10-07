@@ -110,6 +110,60 @@ def latest_boundary(tf, now_ms):
     return None, None
 
 
+TD_KEY = os.environ.get("TWELVEDATA_KEY", "")
+TD_PAUSE = float(os.environ.get("TD_PAUSE", "8"))   # Gratis-Tarif: 8 Abfragen pro Minute
+
+
+def twelvedata(sym, tf):
+    interval = "4h" if tf == "4h" else "1day"
+    size = 120 if tf == "4h" else 260
+    url = ("https://api.twelvedata.com/time_series?symbol=%s&interval=%s&outputsize=%d&order=ASC&timezone=America/New_York&apikey=%s"
+           % (urllib.parse.quote(sym.replace(".", "-")), interval, size, TD_KEY))
+    last = None
+    for i in range(3):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=30) as r:
+                j = json.loads(r.read().decode())
+            if j.get("status") == "error" or "values" not in j:
+                last = RuntimeError("%s %s" % (j.get("code"), j.get("message")))
+                if j.get("code") == 429:
+                    time.sleep(30)
+                    continue
+                raise last
+            out = []
+            for v in j["values"]:
+                dt = v["datetime"]
+                fmt_ = "%Y-%m-%d %H:%M:%S" if " " in dt else "%Y-%m-%d"
+                d = datetime.datetime.strptime(dt, fmt_)
+                if " " not in dt:
+                    d = d.replace(hour=9, minute=30)
+                d = d.replace(tzinfo=NY)
+                t = int(d.timestamp() * 1000)
+                if tf == "1d":
+                    end = ny_ms(d.date(), 16, 0)
+                else:
+                    end = min(t + 4 * 3600_000, ny_ms(d.date(), 16, 0))
+                out.append({"t": t, "T": end, "o": float(v["open"]), "h": float(v["high"]), "l": float(v["low"]),
+                            "c": float(v["close"]), "v": float(v.get("volume") or 0)})
+            return out
+        except Exception as e:
+            last = e
+            time.sleep(3)
+    raise last
+
+
+def fetch_series(sym, tf):
+    if TD_KEY:
+        time.sleep(TD_PAUSE)
+        return twelvedata(sym, tf)
+    if tf == "4h":
+        out = build_4h(yahoo(sym, "60m", "60d"))
+    else:
+        out = build_1d(yahoo(sym, "1d", "1y"))
+    time.sleep(SLEEP)
+    return out
+
+
 def day_context(d1c, now_ms):
     done = [k for k in d1c if k["T"] <= now_ms]
     if len(done) < W.ATR_LEN + 2:
@@ -151,33 +205,29 @@ def main():
     wl = load_watchlist()
     print("Aktien: %d Ticker, faellig: %s" % (len(wl), ",".join(t for t, _, _ in due)))
 
-    # Daten holen (pro Ticker einmal 1h und 1d)
-    data, errors, streak = {}, 0, 0
-    for r in wl:
-        if streak >= 5:
-            errors += 1
-            continue
-        try:
-            h1 = yahoo(r["t"], "60m", "60d") if "4h" in [t for t, _, _ in due] else []
-            time.sleep(SLEEP)
-            d1 = yahoo(r["t"], "1d", "1y")
-            data[r["t"]] = {"4h": build_4h(h1), "1d": build_1d(d1)}
-            streak = 0
-        except Exception as e:
-            errors += 1
-            streak += 1
-            LAST_ERR[0] = repr(e)
-            print("Fehler %s: %r" % (r["t"], e), flush=True)
-        time.sleep(SLEEP)
-    if errors > len(wl) * 0.5:
-        print("Mehr als die Haelfte der Abfragen fehlgeschlagen.")
-        open("stocks_diag.txt", "w").write("Stand %s UTC\nLetzter Fehler: %s\n" % (time.strftime("%Y-%m-%d %H:%M", time.gmtime(now_ms / 1000)), LAST_ERR[0]))
-        if first_run or os.environ.get("ALERT_FAIL"):
-            W.telegram("SniperJoe Aktien: Datenquelle (Yahoo Finance) liefert keine Daten, %d von %d Abfragen fehlgeschlagen." % (errors, len(wl)))
-        save_state(state)
-        raise SystemExit(1)
+    cache, errs, streak = {}, [0], [0]
+    errors_tf = {}
 
-    msgs, activated = [], []
+    def series(sym, tf):
+        key = (sym, tf)
+        if key in cache:
+            return cache[key]
+        if streak[0] >= 5:
+            cache[key] = None
+            errs[0] += 1
+            return None
+        try:
+            cache[key] = fetch_series(sym, tf)
+            streak[0] = 0
+        except Exception as e:
+            errs[0] += 1
+            streak[0] += 1
+            LAST_ERR[0] = repr(e)
+            print("Fehler %s %s: %r" % (sym, tf, e), flush=True)
+            cache[key] = None
+        return cache[key]
+
+    msgs, activated, failed = [], [], False
     for tf, end, start in due:
         blk = state["tf"].get(tf)
         is_new = blk is None
@@ -188,10 +238,10 @@ def main():
         stale = 0
         filt = {"sperre": 0, "kanal": 0, "rueckgang_volumen": 0, "keine_tagesdaten": 0, "r": 0}
         for r in wl:
-            d = data.get(r["t"])
-            if not d:
+            raw_bars = series(r["t"], tf)
+            if not raw_bars:
                 continue
-            cs = [k for k in d[tf] if k["T"] <= now_ms]
+            cs = [k for k in raw_bars if k["T"] <= now_ms]
             if len(cs) < max(W.EMA_LEN, W.ATR_LEN) * 2 + 2:
                 continue
             if cs[-1]["t"] < start:
@@ -223,7 +273,8 @@ def main():
                     if x["drop_atr"] < W.MIN_DROP_ATR or x["vol_ratio"] < W.MIN_VOL_RATIO:
                         filt["rueckgang_volumen"] += 1
                         continue
-                di = day_context(d["1d"], now_ms)
+                d1b = series(r["t"], "1d")
+                di = day_context(d1b, now_ms) if d1b else None
                 have_day = bool(di) and di["atr"] > 0
                 if side == "KAUF" and not have_day:
                     filt["keine_tagesdaten"] += 1
@@ -253,13 +304,24 @@ def main():
                 msgs.append("\n".join(lines))
             blk["last_t"][r["t"]] = newest
         print("[%s] stale=%d gefiltert=%s" % (tf, stale, filt))
+        if errs[0] > len(wl) * 0.5:
+            failed = True
+            continue
         waited_h = (now_ms - end) / 3600000.0
         if stale > len(wl) * 0.5 and waited_h < RETRY_HOURS:
-            print("[%s] Neue Kerzen noch nicht bei Yahoo, spaeter erneut." % tf)
+            print("[%s] Neue Kerzen noch nicht bei der Datenquelle, spaeter erneut." % tf)
             continue
         blk["done"] = end
         if is_new:
             activated.append(tf)
+    if failed:
+        open("stocks_diag.txt", "w").write("Stand %s UTC\nQuelle: %s\nLetzter Fehler: %s\n" % (time.strftime("%Y-%m-%d %H:%M", time.gmtime(now_ms / 1000)), "Twelve Data" if TD_KEY else "Yahoo", LAST_ERR[0]))
+        today = time.strftime("%Y-%m-%d", time.gmtime(now_ms / 1000))
+        if state.get("fail_alert") != today:
+            state["fail_alert"] = today
+            W.telegram("SniperJoe Aktien: Datenquelle (%s) liefert keine Daten (%d Fehler). Naechster Versuch automatisch." % ("Twelve Data" if TD_KEY else "Yahoo Finance", errs[0]))
+        save_state(state)
+        raise SystemExit(1)
     state["started"] = True
     if first_run:
         W.telegram("SniperJoe Aktien gestartet. Ueberwache %d Aktien aus der Liste (Zeitrahmen %s, Regel wie bei Hyperliquid). Ab jetzt kommen Signale kurz nach 13:30 und 16:00 New York." % (len(wl), ", ".join(W.TF_LABEL[t] for t in TFS)))
