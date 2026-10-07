@@ -34,7 +34,7 @@ def yahoo(sym, interval, rng):
         url = "https://%s.finance.yahoo.com/v8/finance/chart/%s?interval=%s&range=%s&includePrePost=false" % (host, sym, interval, rng)
         for i in range(2):
             try:
-                with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=30) as r:
+                with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=12) as r:
                     j = json.loads(r.read().decode())
                 res = j["chart"]["result"][0]
                 ts = res.get("timestamp") or []
@@ -151,16 +151,21 @@ def main():
     print("Aktien: %d Ticker, faellig: %s" % (len(wl), ",".join(t for t, _, _ in due)))
 
     # Daten holen (pro Ticker einmal 1h und 1d)
-    data, errors = {}, 0
+    data, errors, streak = {}, 0, 0
     for r in wl:
+        if streak >= 5:
+            errors += 1
+            continue
         try:
             h1 = yahoo(r["t"], "60m", "60d") if "4h" in [t for t, _, _ in due] else []
             time.sleep(SLEEP)
             d1 = yahoo(r["t"], "1d", "1y")
             data[r["t"]] = {"4h": build_4h(h1), "1d": build_1d(d1)}
+            streak = 0
         except Exception as e:
             errors += 1
-            print("Fehler %s: %s" % (r["t"], e))
+            streak += 1
+            print("Fehler %s: %r" % (r["t"], e), flush=True)
         time.sleep(SLEEP)
     if errors > len(wl) * 0.5:
         print("Mehr als die Haelfte der Abfragen fehlgeschlagen.")
