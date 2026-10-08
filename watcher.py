@@ -28,11 +28,11 @@ EMA_LEN = int(os.environ.get("EMA_LEN", "20"))
 ATR_LEN = int(os.environ.get("ATR_LEN", "14"))
 EXT = float(os.environ.get("EXT", "2.5"))
 MODE = os.environ.get("MODE", "Gegenbewegung")  # oder "Ausbruch"
-TF_MS = {"1h": 3600_000, "4h": 4 * 3600_000, "1d": 86400_000}
-TF_LABEL = {"1h": "1H", "4h": "4H", "1d": "1D"}
+TF_MS = {"1h": 3600_000, "4h": 4 * 3600_000, "1d": 86400_000, "1w": 7 * 86400_000}
+TF_LABEL = {"1h": "1H", "4h": "4H", "1d": "1D", "1w": "1W"}
 # Farbmarke je Zeitrahmen (Telegram kennt keine Textfarben, deshalb farbige Quadrate; bewusst nicht gruen/rot)
-TF_BADGE = {"1h": "\u2B1C", "4h": "\U0001F7E6", "1d": "\U0001F7EA"}
-TF_BACKFILL = {"1h": 6, "4h": 2, "1d": 1}   # wie viele verpasste Kerzen nachgeholt werden
+TF_BADGE = {"1h": "\u2B1C", "4h": "\U0001F7E6", "1d": "\U0001F7EA", "1w": "\U0001F7E7"}
+TF_BACKFILL = {"1h": 6, "4h": 2, "1d": 1, "1w": 1}   # wie viele verpasste Kerzen nachgeholt werden
 TIMEFRAMES = [x.strip().lower() for x in os.environ.get("TIMEFRAMES", "4h,1d").split(",") if x.strip().lower() in TF_MS]
 CANDLES = int(os.environ.get("CANDLES", "120"))
 MIN_VOLUME = float(os.environ.get("MIN_VOLUME_USD", "2000000"))  # 24h-Volumen in USD

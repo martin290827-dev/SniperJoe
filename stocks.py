@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """SniperJoe Aktien: gleiche Regel wie der Hyperliquid-Waechter, Daten von Yahoo Finance.
-Zeitrahmen: 4H (US-Handelszeit in zwei Bloecken 09:30-13:30 und 13:30-16:00 New York) und 1D.
+Zeitrahmen: 4H (US-Handelszeit in zwei Bloecken 09:30-13:30 und 13:30-16:00 New York), 1D und 1W (Woche Montag 09:30 bis Freitag 16:00 New York).
 Signale gehen an denselben Telegram-Bot."""
 import csv, datetime, json, os, time, urllib.request, urllib.error, urllib.parse
 from zoneinfo import ZoneInfo
@@ -12,7 +12,7 @@ CSV_FILE = os.environ.get("WATCHLIST", "stocks/watchlist-main-fund.csv")
 STATE_FILE = os.environ.get("STOCK_STATE_FILE", "stocks_state.json")
 SLEEP = float(os.environ.get("STOCK_SLEEP", "0.4"))
 RETRY_HOURS = float(os.environ.get("RETRY_HOURS", "3"))   # solange wird nach einer Grenze auf Yahoo-Daten gewartet
-TFS = [x.strip().lower() for x in os.environ.get("STOCK_TIMEFRAMES", "4h,1d").split(",") if x.strip().lower() in ("4h", "1d")]
+TFS = [x.strip().lower() for x in os.environ.get("STOCK_TIMEFRAMES", "4h,1d,1w").split(",") if x.strip().lower() in ("4h", "1d", "1w")]
 LAST_ERR = [""]
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"}
 
@@ -92,9 +92,31 @@ def build_1d(d1):
     return out
 
 
+def week_bounds(day):
+    """Montag 09:30 bis Freitag 16:00 (New York) der Woche, in der 'day' liegt."""
+    mon = day - datetime.timedelta(days=day.weekday())
+    return ny_ms(mon, 9, 30), ny_ms(mon + datetime.timedelta(days=4), 16, 0)
+
+
+def build_1w(w1):
+    out = []
+    for k in w1:
+        t, T = week_bounds(ny_dt(k["t"]).date())
+        out.append(dict(k, t=t, T=T))
+    return out
+
+
 def latest_boundary(tf, now_ms):
     """Letzte vergangene Blockgrenze (Beginn der dazugehoerigen Kerze, Ende) an einem Werktag."""
     d = ny_dt(now_ms).date()
+    if tf == "1w":
+        for back in range(0, 14):
+            day = d - datetime.timedelta(days=back)
+            if day.weekday() == 4:
+                start, end = week_bounds(day)
+                if end <= now_ms:
+                    return end, start
+        return None, None
     for back in range(0, 6):
         day = d - datetime.timedelta(days=back)
         if day.weekday() >= 5:
@@ -115,8 +137,8 @@ TD_PAUSE = float(os.environ.get("TD_PAUSE", "8"))   # Gratis-Tarif: 8 Abfragen p
 
 
 def twelvedata(sym, tf):
-    interval = "4h" if tf == "4h" else "1day"
-    size = 120 if tf == "4h" else 260
+    interval = {"4h": "4h", "1d": "1day", "1w": "1week"}[tf]
+    size = {"4h": 120, "1d": 260, "1w": 150}[tf]
     url = ("https://api.twelvedata.com/time_series?symbol=%s&interval=%s&outputsize=%d&order=ASC&timezone=America/New_York&apikey=%s"
            % (urllib.parse.quote(sym.replace(".", "-")), interval, size, TD_KEY))
     last = None
@@ -139,7 +161,9 @@ def twelvedata(sym, tf):
                     d = d.replace(hour=9, minute=30)
                 d = d.replace(tzinfo=NY)
                 t = int(d.timestamp() * 1000)
-                if tf == "1d":
+                if tf == "1w":
+                    t, end = week_bounds(d.date())
+                elif tf == "1d":
                     end = ny_ms(d.date(), 16, 0)
                 else:
                     end = min(t + 4 * 3600_000, ny_ms(d.date(), 16, 0))
@@ -158,6 +182,8 @@ def fetch_series(sym, tf):
         return twelvedata(sym, tf)
     if tf == "4h":
         out = build_4h(yahoo(sym, "60m", "60d"))
+    elif tf == "1w":
+        out = build_1w(yahoo(sym, "1wk", "5y"))
     else:
         out = build_1d(yahoo(sym, "1d", "1y"))
     time.sleep(SLEEP)
@@ -275,7 +301,7 @@ def main():
                     di = day_context(d1b, now_ms) if d1b else None
                     q = series("QQQ", tf)
                     mf = W.mkt_fall([k for k in q if k["T"] <= now_ms], x["t_sig"]) if q else False
-                when = ny_dt(x["t"]).strftime("%d.%m. %H:%M") + " New York"
+                when = ("Woche ab " + ny_dt(x["t"]).strftime("%d.%m.")) if tf == "1w" else ny_dt(x["t"]).strftime("%d.%m. %H:%M") + " New York"
                 extra = "Liste: %s | Monat %s | Woche %s | %s" % (r["range"], r["mbx"], r["wbx"], r["pos"])
                 text, why = W.make_signal(x, di, mf, "QQQ", r["t"], badge + "   \U0001F4C8 Aktie", when, "", extra)
                 if text is None:
@@ -306,6 +332,8 @@ def main():
     state["started"] = True
     if first_run:
         W.telegram("SniperJoe Aktien gestartet. Ueberwache %d Aktien aus der Liste (Zeitrahmen %s, Regel wie bei Hyperliquid). Ab jetzt kommen Signale kurz nach 13:30 und 16:00 New York." % (len(wl), ", ".join(W.TF_LABEL[t] for t in TFS)))
+    if activated and not first_run:
+        W.telegram("SniperJoe Aktien: Neuer Zeitrahmen aktiv: %s. Ab jetzt kommen auch dort Signale. Aktive Zeitrahmen: %s." % (", ".join(W.TF_LABEL[t] for t in activated), ", ".join(W.TF_LABEL[t] for t in TFS)))
     if msgs:
         W.telegram("SniperJoe Aktien: %d Signal(e)\n\n" % len(msgs) + "\n\n".join(msgs) + "\n\nKein Handelssignal. Plan und Risiko pruefen.", html=True)
     save_state(state)

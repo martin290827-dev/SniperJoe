@@ -35,7 +35,7 @@ jobs:
           MIN_VOL_RATIO: "2.0"
           COOLDOWN_BARS: "6"
           TWELVEDATA_KEY: ${{ secrets.TWELVEDATA_KEY }}
-          STOCK_TIMEFRAMES: "4h,1d"
+          STOCK_TIMEFRAMES: "4h,1d,1w"
         run: python stocks.py
       - name: Zustand speichern
         if: always()

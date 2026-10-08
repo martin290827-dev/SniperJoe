@@ -42,7 +42,7 @@ Sperre gegen Wiederholungen: 6 Kerzen des jeweiligen Zeitrahmens pro Markt und R
 ## Aktien (stocks.py)
 
 Gleiche Regel und gleiche Filter wie bei Hyperliquid, aber fuer die Ticker in `stocks/watchlist-main-fund.csv` (Yahoo Finance als Datenquelle, inoffiziell).
-- 4H = zwei US-Sitzungsbloecke pro Tag (09:30-13:30 und 13:30-16:00 New York), 1D = Tageskerze.
+- 4H = zwei US-Sitzungsbloecke pro Tag (09:30-13:30 und 13:30-16:00 New York), 1D = Tageskerze, 1W = Wochenkerze (Montag 09:30 bis Freitag 16:00 New York; Signal kurz nach Freitag 16:00 New York, Badge orange).
 - Workflow `stocks.yml` laeuft werktags alle 10 Minuten von 17-23 UTC, rechnet aber nur kurz nach 13:30 und 16:00 New York.
 - Zustand in `stocks_state.json`. Die Liste aendern: CSV im Ordner `stocks/` ersetzen.
 
