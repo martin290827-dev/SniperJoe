@@ -34,7 +34,7 @@ jobs:
           MIN_BAND_PCT: "10.0"    # nur KAUF: Kanalbreite vor der Signalkerze in %
           MIN_DROP_ATR: "2.0"     # nur KAUF: Rueckgang in ATR innerhalb von 4 Kerzen
           MIN_VOL_RATIO: "0.0"    # nur KAUF: Volumen der Signalkerze x Schnitt der letzten 20 Kerzen
-          TIMEFRAMES: "4h,1d"     # Zeitrahmen, kommagetrennt (moeglich: 1h, 4h, 1d)
+          TIMEFRAMES: "1h,4h,1d"  # Zeitrahmen, kommagetrennt (moeglich: 1h, 4h, 1d, 1w)
           COOLDOWN_BARS: "6"      # Sperre pro Markt, Zeitrahmen und Richtung in Kerzen
         run: python watcher.py
       - name: Zustand speichern
