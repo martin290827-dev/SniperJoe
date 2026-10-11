@@ -1,0 +1,41 @@
+name: SniperJoe Langsam (1W/1M)
+
+on:
+  schedule:
+    - cron: "20 6 * * *"
+    - cron: "20 23 * * 5,6,0,1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sniperjoe-slow
+  cancel-in-progress: false
+
+jobs:
+  slow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Langsam-Waechter ausfuehren
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TWELVEDATA_KEY: ${{ secrets.TWELVEDATA_KEY }}
+        run: python slow.py
+      - name: Zustand speichern
+        if: always()
+        run: |
+          git config user.name "sniperjoe-bot"
+          git config user.email "sniperjoe-bot@users.noreply.github.com"
+          git add slow_state.json 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Langsam-Zustand aktualisiert"
+            git pull --rebase -q || true
+            git push || true
+          fi

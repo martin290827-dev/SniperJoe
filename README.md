@@ -53,3 +53,11 @@ Gleiche Regel und gleiche Filter wie bei Hyperliquid, aber fuer die Ticker in `s
 - Kerzenform (`WICK_ON=1`, `WICK_MIN=0.5`): Schluss der Signalkerze mindestens in der oberen Haelfte der Kerzenspanne.
 - Trend 1D (EMA50/EMA200) und Markt (BTC bei Hyperliquid, QQQ bei Aktien; faellt mit ab `MKT_DROP_ATR=2.0`) stehen als Info in der Nachricht. Als Filter nur mit `TREND_FILTER=1` bzw. `MKT_FILTER=1`.
 - Nachricht KAUF: Kaufkurs, Stop, Ziel, R. VERKAUF: nur Hinweis ohne Zusatzangaben.
+
+## Langsam-Wächter (1W / 1M)
+
+`slow.py` + `.github/workflows/slow.yml` + `slow-watchlist.csv`. Meldet per Telegram, wenn eine abgeschlossene
+Wochen- oder Monatskerze die obere oder untere Linie des Perp-Guard-Indikators (v1.25, Profil Langsam) berührt.
+Werte: TSLA, BMNR, SOL, SPCX, BTC, ETH. Zwei Bandarten: ATR (EMA20 ± 2,5 × ATR14) und Perzentil (5 % / 95 %,
+Rückblick 100 Kerzen bei 1W, 48 bei 1M). Die Nachricht nennt Bandart und Einstellung für den Chart.
+Daten: Twelve Data, Ersatz Yahoo. Zustand: `slow_state.json`. Nur ein Hinweis, kein Handelssignal.
