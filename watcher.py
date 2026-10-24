@@ -52,6 +52,8 @@ WICK_ON = os.environ.get("WICK_ON", "1") == "1"            # KAUF nur, wenn der 
 WICK_MIN = float(os.environ.get("WICK_MIN", "0.5"))        # Lage des Schlusses in der Kerzenspanne (0 = Tief, 1 = Hoch)
 TREND_FILTER = os.environ.get("TREND_FILTER", "0") == "1"  # kein KAUF im Abwaertstrend (sonst nur Info)
 MKT_FILTER = os.environ.get("MKT_FILTER", "0") == "1"      # kein KAUF, wenn der Markt mitfaellt (sonst nur Info)
+MKT_LONG_N = int(os.environ.get("MKT_LONG_N", "12"))               # Markt Langzeit-Check: Rueckblick in Kerzen (wie Indikator)
+MKT_LONG_ATR = float(os.environ.get("MKT_LONG_ATR", "3.0"))        # Markt faellt mit, wenn der Index in MKT_LONG_N Kerzen mind. so viele ATR gefallen ist
 MAX_BUY_PER_CANDLE = int(os.environ.get("MAX_BUY_PER_CANDLE", "0"))  # 0 = keine Grenze; sonst nur die N besten KAUF (hoechstes R) je Kerze und Zeitrahmen
 MKT_DROP_ATR = float(os.environ.get("MKT_DROP_ATR", "2.0"))
 
@@ -228,8 +230,12 @@ def mkt_fall(mcs, t):
     if idx is None or idx < ATR_LEN + 1:
         return False
     a = atr_wilder([k["h"] for k in mcs], [k["l"] for k in mcs], [k["c"] for k in mcs], ATR_LEN)
+    if a[idx] <= 0:
+        return False
     hi4 = max(k["h"] for k in mcs[max(0, idx - 3):idx + 1])
-    return a[idx] > 0 and (hi4 - mcs[idx]["l"]) / a[idx] >= MKT_DROP_ATR
+    hiL = max(k["h"] for k in mcs[max(0, idx - MKT_LONG_N + 1):idx + 1])
+    low = mcs[idx]["l"]
+    return (hi4 - low) / a[idx] >= MKT_DROP_ATR or (hiL - low) / a[idx] >= MKT_LONG_ATR
 
 
 def trend_state(di, price):
