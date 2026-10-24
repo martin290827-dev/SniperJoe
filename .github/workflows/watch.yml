@@ -34,6 +34,8 @@ jobs:
           MIN_BAND_PCT: "10.0"    # nur KAUF: Kanalbreite vor der Signalkerze in %
           MIN_DROP_ATR: "2.0"     # nur KAUF: Rueckgang in ATR innerhalb von 4 Kerzen
           WICK_MIN: "0.3"        # nur KAUF: Schluss mind. so weit oben in der Kerze (0=Tief, 1=Hoch)
+          MKT_FILTER: "1"          # kein KAUF, wenn BTC (bzw. QQQ) mitfaellt
+          MAX_BUY_PER_CANDLE: "4"  # je Kerze und Zeitrahmen nur die 4 KAUF mit dem hoechsten R
           MIN_VOL_RATIO: "0.0"    # nur KAUF: Volumen der Signalkerze x Schnitt der letzten 20 Kerzen
           TIMEFRAMES: "4h,1d"     # Zeitrahmen, kommagetrennt (moeglich: 1h, 4h, 1d, 1w); 1h vorübergehend aus (zu viele Signale)
           COOLDOWN_BARS: "6"      # Sperre pro Markt, Zeitrahmen und Richtung in Kerzen

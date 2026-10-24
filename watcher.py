@@ -52,6 +52,7 @@ WICK_ON = os.environ.get("WICK_ON", "1") == "1"            # KAUF nur, wenn der 
 WICK_MIN = float(os.environ.get("WICK_MIN", "0.5"))        # Lage des Schlusses in der Kerzenspanne (0 = Tief, 1 = Hoch)
 TREND_FILTER = os.environ.get("TREND_FILTER", "0") == "1"  # kein KAUF im Abwaertstrend (sonst nur Info)
 MKT_FILTER = os.environ.get("MKT_FILTER", "0") == "1"      # kein KAUF, wenn der Markt mitfaellt (sonst nur Info)
+MAX_BUY_PER_CANDLE = int(os.environ.get("MAX_BUY_PER_CANDLE", "0"))  # 0 = keine Grenze; sonst nur die N besten KAUF (hoechstes R) je Kerze und Zeitrahmen
 MKT_DROP_ATR = float(os.environ.get("MKT_DROP_ATR", "2.0"))
 
 TG_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
@@ -400,6 +401,7 @@ def process_timeframe(tf, state, todo, now_ms, first_run):
         state["tf"][tf] = blk
     messages, errors = [], 0
     filtered = {"sperre": 0, "kanal": 0, "rueckgang_volumen": 0, "keine_tagesdaten": 0, "r": 0}
+    cands = []   # (Kerzenzeit, Seite, R, Coin, Text) -> Obergrenze je Kerze wird nach der Schleife angewandt
     badge = "%s <b>%s</b>" % (TF_BADGE[tf], TF_LABEL[tf])
     try:
         mkt_cs = [k for k in get_candles("BTC", tf, CANDLES, now_ms) if k["T"] <= now_ms]
@@ -438,10 +440,26 @@ def process_timeframe(tf, state, todo, now_ms, first_run):
             if text is None:
                 filtered[why] = filtered.get(why, 0) + 1
                 continue
-            blk["last_sent"][coin + "|" + side] = t
-            messages.append(text)
+            rr = (di["hi"] - x["close"]) / (di["atr"] * STOP_DAY_MULT) if (side == "KAUF" and di and di["atr"] > 0) else 0.0
+            cands.append((t, side, rr, coin, text))
         blk["last_t"][coin] = newest
         time.sleep(SLEEP)
+    keep = set()
+    by_t = {}
+    for i, cd in enumerate(cands):
+        if cd[1] == "KAUF":
+            by_t.setdefault(cd[0], []).append(i)
+        else:
+            keep.add(i)
+    for t, idxs in by_t.items():
+        idxs.sort(key=lambda i: -cands[i][2])
+        n = len(idxs) if MAX_BUY_PER_CANDLE <= 0 else MAX_BUY_PER_CANDLE
+        keep.update(idxs[:n])
+        filtered["limit"] = filtered.get("limit", 0) + len(idxs[n:])
+    for i, (t, side, rr, coin, text) in enumerate(cands):
+        if i in keep:
+            blk["last_sent"][coin + "|" + side] = t
+            messages.append(text)
     return messages, errors, filtered, is_new
 
 
